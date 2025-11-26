@@ -1,4 +1,4 @@
-﻿using SwitcherLib;
+using SwitcherLib;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -29,21 +29,22 @@ namespace MediaUpload
         {
             ConsoleUtils.Version();
             Console.Out.WriteLine();
-            Console.Out.WriteLine("Usage: mediaupload.exe [options] <hostname> <slot> <filename>");
-            Console.Out.WriteLine("Uploads an image to a BlackMagic ATEM switcher");
+            Console.Out.WriteLine("Usage: mediaupload.exe [options] <hostname> <slot:filename> [slot:filename ...]");
+            Console.Out.WriteLine("       mediaupload.exe [options] <hostname> <slot> <filename>  (legacy mode)");
+            Console.Out.WriteLine();
+            Console.Out.WriteLine("Uploads images to a BlackMagic ATEM switcher");
             Console.Out.WriteLine();
             Console.Out.WriteLine("Arguments:");
             Console.Out.WriteLine();
             Console.Out.WriteLine(" hostname        - The hostname or IP of the ATEM switcher");
-            Console.Out.WriteLine(" slot            - The number of the media slot to upload to");
-            Console.Out.WriteLine(" filename        - The filename of the image to upload");
+            Console.Out.WriteLine(" slot:filename   - Slot number and filename pairs (e.g., 1:image.png 2:image2.png)");
             Console.Out.WriteLine();
             Console.Out.WriteLine("Options:");
             Console.Out.WriteLine();
             Console.Out.WriteLine(" -h, --help      - This help message");
             Console.Out.WriteLine(" -d, --debug     - Debug output");
             Console.Out.WriteLine(" -v, --version   - Version information");
-            Console.Out.WriteLine(" -n, --name      - The name for the item in the media pool");
+            Console.Out.WriteLine(" -s, --skip-tally - Skip tally check (upload immediately without checking if slot is on program)");
             Console.Out.WriteLine();
             Console.Out.WriteLine("Image Format:");
             Console.Out.WriteLine();
@@ -53,7 +54,8 @@ namespace MediaUpload
         private static void ProcessArgs(string[] args)
         {
             IList<string> args1 = new List<string>();
-            string name = "";
+            bool skipTally = false;
+            
             for (int index = 0; index < args.Length; index++)
             {
                 switch (args[index])
@@ -81,16 +83,11 @@ namespace MediaUpload
                         Log.CurrentLevel = Log.Level.Debug;
                         break;
 
-                    case "-n":
-                    case "--name":
-                    case "/n":
-                    case "/name":
-                        if (index < args.Length)
-                        {
-                            name = args[index + 1];
-                            index++;
-                            break;
-                        }
+                    case "-s":
+                    case "--skip-tally":
+                    case "/s":
+                    case "/skip-tally":
+                        skipTally = true;
                         break;
 
                     default:
@@ -98,10 +95,114 @@ namespace MediaUpload
                         break;
                 }
             }
-            MediaUpload.Upload(name, args1);
+            
+            if (args1.Count < 2)
+            {
+                MediaUpload.Help();
+                throw new SwitcherLibException("Invalid arguments");
+            }
+
+            // Detect batch mode: if second arg contains ":", it's batch mode
+            if (args1[1].Contains(":"))
+            {
+                MediaUpload.UploadBatch(args1, skipTally);
+            }
+            else
+            {
+                MediaUpload.UploadLegacy(args1, skipTally);
+            }
         }
 
-        private static void Upload(string name, IList<string> args)
+        private static void UploadBatch(IList<string> args, bool skipTally)
+        {
+            string hostname = args[0];
+            Switcher switcher = new Switcher(hostname);
+            Log.Debug(String.Format("Switcher: {0}", switcher.GetProductName()));
+            Log.Debug(String.Format("Resolution: {0}x{1}", switcher.GetVideoWidth().ToString(), switcher.GetVideoHeight().ToString()));
+
+            if (skipTally)
+            {
+                Log.Info("Tally checking disabled - uploading immediately");
+            }
+
+            int totalImages = args.Count - 1;
+            int currentImage = 0;
+            int maxWaitSeconds = 300; // 5 minute timeout per image
+
+            // Process each slot:filename pair
+            for (int i = 1; i < args.Count; i++)
+            {
+                currentImage++;
+                string arg = args[i];
+                int colonIndex = arg.IndexOf(':');
+                
+                if (colonIndex == -1)
+                {
+                    throw new SwitcherLibException(String.Format("Invalid format: {0}. Expected slot:filename", arg));
+                }
+
+                string slotStr = arg.Substring(0, colonIndex);
+                string filename = arg.Substring(colonIndex + 1);
+                int slot = MediaUpload.GetSlot(slotStr);
+
+                Log.Info(String.Format("[{0}/{1}] Uploading to slot {2}: {3}", currentImage, totalImages, slot + 1, filename));
+
+                // Wait for slot to be safe (unless skip-tally is set)
+                if (!skipTally)
+                {
+                    DateTime startWait = DateTime.Now;
+                    bool slotSafe = false;
+                    bool loggedWaiting = false;
+                    
+                    while (!slotSafe)
+                    {
+                        slotSafe = switcher.IsSlotSafeToUpload(slot);
+                        
+                        if (!slotSafe)
+                        {
+                            double waitedSeconds = (DateTime.Now - startWait).TotalSeconds;
+                            
+                            if (waitedSeconds >= maxWaitSeconds)
+                            {
+                                throw new SwitcherLibException(String.Format("Timeout waiting for slot {0} to become available", slot + 1));
+                            }
+                            
+                            if (!loggedWaiting)
+                            {
+                                Log.Info(String.Format("Slot {0} is on program, waiting...", slot + 1));
+                                loggedWaiting = true;
+                            }
+                            Thread.Sleep(100);
+                        }
+                    }
+                    
+                    if (loggedWaiting)
+                    {
+                        Log.Info(String.Format("Slot {0} is now safe, uploading...", slot + 1));
+                    }
+                }
+
+                Upload upload = new Upload(switcher, filename, slot);
+                upload.Start();
+                
+                int lastProgress = -1;
+                while (upload.InProgress())
+                {
+                    int currentProgress = upload.GetProgress();
+                    if (currentProgress != lastProgress)
+                    {
+                        Log.Info(String.Format("Progress: {0}%", currentProgress.ToString()));
+                        lastProgress = currentProgress;
+                    }
+                    Thread.Sleep(100);
+                }
+                Log.Info(String.Format("Progress: {0}%", upload.GetProgress().ToString()));
+            }
+            
+            Log.Info(String.Format("Batch complete: {0} images uploaded", totalImages));
+        }
+
+        private static void UploadLegacy(IList<string> args, bool skipTally)
         {
             if (args.Count < 3)
             {
@@ -117,17 +218,51 @@ namespace MediaUpload
             args.RemoveAt(0);
 
             string filename = String.Join(" ", args);
-            Upload upload = new Upload(switcher, filename, slot);
-            if (name != "")
+
+            // Wait for slot to be safe (unless skip-tally is set)
+            if (!skipTally)
             {
-                upload.SetName(name);
+                int maxWaitSeconds = 300;
+                DateTime startWait = DateTime.Now;
+                bool slotSafe = false;
+                bool loggedWaiting = false;
+                
+                while (!slotSafe)
+                {
+                    slotSafe = switcher.IsSlotSafeToUpload(slot);
+                    
+                    if (!slotSafe)
+                    {
+                        double waitedSeconds = (DateTime.Now - startWait).TotalSeconds;
+                        
+                        if (waitedSeconds >= maxWaitSeconds)
+                        {
+                            throw new SwitcherLibException(String.Format("Timeout waiting for slot {0} to become available", slot + 1));
+                        }
+                        
+                        if (!loggedWaiting)
+                        {
+                            Log.Info(String.Format("Slot {0} is on program, waiting...", slot + 1));
+                            loggedWaiting = true;
+                        }
+                        Thread.Sleep(100);
+                    }
+                }
+                
+                if (loggedWaiting)
+                {
+                    Log.Info(String.Format("Slot {0} is now safe, uploading...", slot + 1));
+                }
             }
+
+            Upload upload = new Upload(switcher, filename, slot);
             upload.Start();
             while (upload.InProgress())
             {
                 Log.Info(String.Format("Progress: {0}%", upload.GetProgress().ToString()));
                 Thread.Sleep(100);
             }
+            Log.Info(String.Format("Progress: {0}%", upload.GetProgress().ToString()));
         }
 
         private static int GetSlot(string arg)
