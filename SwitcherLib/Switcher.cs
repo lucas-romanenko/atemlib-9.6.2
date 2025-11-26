@@ -1,4 +1,4 @@
-﻿using BMDSwitcherAPI;
+using BMDSwitcherAPI;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -121,6 +121,102 @@ namespace SwitcherLib
                 default:
                     throw new SwitcherLibException(String.Format("Unsupported video height: {0}", videoHeight.ToString()));
             }
+        }
+
+        /// <summary>
+        /// Check if a slot is safe to upload to.
+        /// Returns true if safe (slot not on a media player with tally ON).
+        /// Returns false if unsafe (slot is on a media player that's currently on program).
+        /// </summary>
+        public bool IsSlotSafeToUpload(int slotIndex)
+        {
+            this.Connect();
+
+            try
+            {
+                // Get all media players and check if any have this slot loaded
+                IntPtr mediaPlayerIteratorPtr;
+                Guid mediaIteratorIID = typeof(IBMDSwitcherMediaPlayerIterator).GUID;
+                this.switcher.CreateIterator(ref mediaIteratorIID, out mediaPlayerIteratorPtr);
+                IBMDSwitcherMediaPlayerIterator mediaPlayerIterator = (IBMDSwitcherMediaPlayerIterator)Marshal.GetObjectForIUnknown(mediaPlayerIteratorPtr);
+
+                // Get program input to check tally
+                long programInput = GetProgramInput();
+
+                IBMDSwitcherMediaPlayer mediaPlayer;
+                mediaPlayerIterator.Next(out mediaPlayer);
+                int mediaPlayerNumber = 1;
+
+                while (mediaPlayer != null)
+                {
+                    _BMDSwitcherMediaPlayerSourceType type;
+                    uint index;
+                    mediaPlayer.GetSource(out type, out index);
+
+                    // Check if this media player has our slot loaded
+                    if (type == _BMDSwitcherMediaPlayerSourceType.bmdSwitcherMediaPlayerSourceTypeStill && (int)index == slotIndex)
+                    {
+                        // Slot is on this media player - check if media player is on program
+                        long mediaPlayerInputId = GetMediaPlayerInputId(mediaPlayerNumber);
+                        
+                        if (mediaPlayerInputId == programInput)
+                        {
+                            Log.Debug(String.Format("Slot {0} is on Media Player {1} which is ON PROGRAM - NOT SAFE", slotIndex + 1, mediaPlayerNumber));
+                            return false;
+                        }
+                        else
+                        {
+                            Log.Debug(String.Format("Slot {0} is on Media Player {1} but not on program - SAFE", slotIndex + 1, mediaPlayerNumber));
+                        }
+                    }
+
+                    mediaPlayerNumber++;
+                    mediaPlayerIterator.Next(out mediaPlayer);
+                }
+
+                // Slot is not on any media player that's on program
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(String.Format("Error checking slot safety: {0}", ex.Message));
+                // If we can't check, assume unsafe
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Get the current program input ID from Mix Effect Block 1
+        /// </summary>
+        private long GetProgramInput()
+        {
+            IntPtr meIteratorPtr;
+            Guid meIteratorIID = typeof(IBMDSwitcherMixEffectBlockIterator).GUID;
+            this.switcher.CreateIterator(ref meIteratorIID, out meIteratorPtr);
+            IBMDSwitcherMixEffectBlockIterator meIterator = (IBMDSwitcherMixEffectBlockIterator)Marshal.GetObjectForIUnknown(meIteratorPtr);
+
+            IBMDSwitcherMixEffectBlock mixEffectBlock;
+            meIterator.Next(out mixEffectBlock);
+
+            if (mixEffectBlock != null)
+            {
+                long programInput;
+                mixEffectBlock.GetProgramInput(out programInput);
+                return programInput;
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// Get the input ID for a media player (1-based media player number)
+        /// Media Player 1 = 3010, Media Player 2 = 3020, etc.
+        /// </summary>
+        private long GetMediaPlayerInputId(int mediaPlayerNumber)
+        {
+            // Standard ATEM input IDs for media players
+            // MP1 = 3010, MP2 = 3020, MP3 = 3030, MP4 = 3040
+            return 3000 + (mediaPlayerNumber * 10);
         }
 
         public IList<MediaStill> GetStills()
