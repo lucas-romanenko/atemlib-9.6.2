@@ -117,88 +117,73 @@ namespace MediaUpload
         /// Waits for a safe upload window using cycle-wait strategy.
         /// 
         /// Logic:
-        /// - If slot is currently live: wait for cold -> live -> cold cycle, then upload
-        /// - If slot is currently cold: observe for up to 40 seconds
-        ///   - If it goes live during observation, wait for it to go cold, then upload
-        ///   - If 40 seconds pass without going live, slot isn't in macro rotation, safe to upload
+        /// - If slot is currently live: wait for cold first
+        /// - Then wait for live (up to 40 seconds)
+        /// - Then wait for cold
+        /// - Upload
+        /// 
+        /// If slot never goes live within 40 seconds, assume it's not in macro rotation and upload.
+        /// 
+        /// "Live" means: slot is sourced to a media player AND that media player is on program.
         /// </summary>
         /// <param name="switcher">The switcher instance</param>
         /// <param name="slot">The slot number (0-indexed)</param>
-        /// <param name="observationSeconds">How long to observe if starting cold (default 40)</param>
+        /// <param name="observationSeconds">How long to wait for slot to go live (default 40)</param>
         /// <param name="maxWaitSeconds">Maximum total wait time (default 300)</param>
         private static void WaitForSafeUploadWindow(Switcher switcher, int slot, int observationSeconds = 40, int maxWaitSeconds = 300)
         {
             DateTime startTime = DateTime.Now;
-            bool initialState = switcher.IsSlotSafeToUpload(slot); // true = cold/safe, false = live
+            bool isSafe = switcher.IsSlotSafeToUpload(slot);
             
-            Log.Debug(String.Format("Slot {0} initial state: {1}", slot + 1, initialState ? "cold" : "live"));
+            Log.Debug(String.Format("Slot {0} initial state: {1}", slot + 1, isSafe ? "cold" : "live"));
 
-            if (!initialState)
+            // Step 1: If currently live, wait for cold first
+            if (!isSafe)
             {
-                // Slot is LIVE at start - wait for full cycle: cold -> live -> cold
-                Log.Info(String.Format("Slot {0} is live, waiting for macro cycle to complete...", slot + 1));
-                
-                // Phase 1: Wait for it to go cold
-                Log.Debug(String.Format("Slot {0}: Waiting for cold...", slot + 1));
+                Log.Info(String.Format("Slot {0} is live, waiting for cold...", slot + 1));
                 while (!switcher.IsSlotSafeToUpload(slot))
                 {
                     CheckTimeout(startTime, maxWaitSeconds, slot);
                     Thread.Sleep(50);
                 }
-                Log.Debug(String.Format("Slot {0}: Now cold, waiting for live...", slot + 1));
-                
-                // Phase 2: Wait for it to go live again
-                while (switcher.IsSlotSafeToUpload(slot))
-                {
-                    CheckTimeout(startTime, maxWaitSeconds, slot);
-                    Thread.Sleep(50);
-                }
-                Log.Debug(String.Format("Slot {0}: Now live, waiting for cold...", slot + 1));
-                
-                // Phase 3: Wait for it to go cold again - this is our safe window
-                while (!switcher.IsSlotSafeToUpload(slot))
-                {
-                    CheckTimeout(startTime, maxWaitSeconds, slot);
-                    Thread.Sleep(50);
-                }
-                Log.Info(String.Format("Slot {0}: Cycle complete, safe to upload", slot + 1));
+                Log.Debug(String.Format("Slot {0}: Now cold", slot + 1));
             }
-            else
+
+            // Step 2: Wait for live (up to 40 seconds)
+            Log.Info(String.Format("Slot {0}: Waiting for live (up to {1}s)...", slot + 1, observationSeconds));
+            DateTime waitForLiveStart = DateTime.Now;
+            bool wentLive = false;
+
+            while ((DateTime.Now - waitForLiveStart).TotalSeconds < observationSeconds)
             {
-                // Slot is COLD at start - observe for up to 40 seconds
-                Log.Info(String.Format("Slot {0} is cold, observing for {1} seconds...", slot + 1, observationSeconds));
-                
-                DateTime observationStart = DateTime.Now;
-                bool sawLive = false;
-                
-                while ((DateTime.Now - observationStart).TotalSeconds < observationSeconds)
+                CheckTimeout(startTime, maxWaitSeconds, slot);
+
+                if (!switcher.IsSlotSafeToUpload(slot))
                 {
-                    CheckTimeout(startTime, maxWaitSeconds, slot);
-                    
-                    bool currentlySafe = switcher.IsSlotSafeToUpload(slot);
-                    
-                    if (!currentlySafe)
-                    {
-                        // It went live during observation
-                        sawLive = true;
-                        Log.Debug(String.Format("Slot {0}: Went live during observation, waiting for cold...", slot + 1));
-                        
-                        // Wait for it to go cold, then we're safe
-                        while (!switcher.IsSlotSafeToUpload(slot))
-                        {
-                            CheckTimeout(startTime, maxWaitSeconds, slot);
-                            Thread.Sleep(50);
-                        }
-                        Log.Info(String.Format("Slot {0}: Now cold after cycle, safe to upload", slot + 1));
-                        return;
-                    }
-                    
-                    Thread.Sleep(50);
+                    // It went live
+                    wentLive = true;
+                    Log.Debug(String.Format("Slot {0}: Now live", slot + 1));
+                    break;
                 }
-                
-                // 40 seconds passed without going live - slot isn't in active rotation
+                Thread.Sleep(50);
+            }
+
+            if (!wentLive)
+            {
+                // Never went live in 40 seconds - not in rotation, safe to upload
                 Log.Info(String.Format("Slot {0}: No activity detected in {1}s, safe to upload", slot + 1, observationSeconds));
+                return;
             }
+
+            // Step 3: Wait for cold
+            Log.Info(String.Format("Slot {0}: Waiting for cold...", slot + 1));
+            while (!switcher.IsSlotSafeToUpload(slot))
+            {
+                CheckTimeout(startTime, maxWaitSeconds, slot);
+                Thread.Sleep(50);
+            }
+
+            Log.Info(String.Format("Slot {0}: Cycle complete, safe to upload", slot + 1));
         }
 
         private static void CheckTimeout(DateTime startTime, int maxWaitSeconds, int slot)
