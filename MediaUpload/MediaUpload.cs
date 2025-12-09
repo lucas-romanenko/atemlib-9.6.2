@@ -113,6 +113,103 @@ namespace MediaUpload
             }
         }
 
+        /// <summary>
+        /// Waits for a safe upload window using cycle-wait strategy.
+        /// 
+        /// Logic:
+        /// - If slot is currently hot: wait for cold -> hot -> cold cycle, then upload
+        /// - If slot is currently cold: observe for up to 40 seconds
+        ///   - If it goes hot during observation, wait for it to go cold, then upload
+        ///   - If 40 seconds pass without going hot, slot isn't in macro rotation, safe to upload
+        /// </summary>
+        /// <param name="switcher">The switcher instance</param>
+        /// <param name="slot">The slot number (0-indexed)</param>
+        /// <param name="observationSeconds">How long to observe if starting cold (default 40)</param>
+        /// <param name="maxWaitSeconds">Maximum total wait time (default 300)</param>
+        private static void WaitForSafeUploadWindow(Switcher switcher, int slot, int observationSeconds = 40, int maxWaitSeconds = 300)
+        {
+            DateTime startTime = DateTime.Now;
+            bool initialState = switcher.IsSlotSafeToUpload(slot); // true = cold/safe, false = hot/live
+            
+            Log.Debug(String.Format("Slot {0} initial state: {1}", slot + 1, initialState ? "cold" : "hot"));
+
+            if (!initialState)
+            {
+                // Slot is HOT at start - wait for full cycle: cold -> hot -> cold
+                Log.Info(String.Format("Slot {0} is live, waiting for macro cycle to complete...", slot + 1));
+                
+                // Phase 1: Wait for it to go cold
+                Log.Debug(String.Format("Slot {0}: Waiting for cold...", slot + 1));
+                while (!switcher.IsSlotSafeToUpload(slot))
+                {
+                    CheckTimeout(startTime, maxWaitSeconds, slot);
+                    Thread.Sleep(50);
+                }
+                Log.Debug(String.Format("Slot {0}: Now cold, waiting for hot...", slot + 1));
+                
+                // Phase 2: Wait for it to go hot again
+                while (switcher.IsSlotSafeToUpload(slot))
+                {
+                    CheckTimeout(startTime, maxWaitSeconds, slot);
+                    Thread.Sleep(50);
+                }
+                Log.Debug(String.Format("Slot {0}: Now hot, waiting for cold...", slot + 1));
+                
+                // Phase 3: Wait for it to go cold again - this is our safe window
+                while (!switcher.IsSlotSafeToUpload(slot))
+                {
+                    CheckTimeout(startTime, maxWaitSeconds, slot);
+                    Thread.Sleep(50);
+                }
+                Log.Info(String.Format("Slot {0}: Cycle complete, safe to upload", slot + 1));
+            }
+            else
+            {
+                // Slot is COLD at start - observe for up to 40 seconds
+                Log.Info(String.Format("Slot {0} is cold, observing for {1} seconds...", slot + 1, observationSeconds));
+                
+                DateTime observationStart = DateTime.Now;
+                bool sawHot = false;
+                
+                while ((DateTime.Now - observationStart).TotalSeconds < observationSeconds)
+                {
+                    CheckTimeout(startTime, maxWaitSeconds, slot);
+                    
+                    bool currentlySafe = switcher.IsSlotSafeToUpload(slot);
+                    
+                    if (!currentlySafe)
+                    {
+                        // It went hot during observation
+                        sawHot = true;
+                        Log.Debug(String.Format("Slot {0}: Went hot during observation, waiting for cold...", slot + 1));
+                        
+                        // Wait for it to go cold, then we're safe
+                        while (!switcher.IsSlotSafeToUpload(slot))
+                        {
+                            CheckTimeout(startTime, maxWaitSeconds, slot);
+                            Thread.Sleep(50);
+                        }
+                        Log.Info(String.Format("Slot {0}: Now cold after cycle, safe to upload", slot + 1));
+                        return;
+                    }
+                    
+                    Thread.Sleep(50);
+                }
+                
+                // 40 seconds passed without going hot - slot isn't in active rotation
+                Log.Info(String.Format("Slot {0}: No activity detected in {1}s, safe to upload", slot + 1, observationSeconds));
+            }
+        }
+
+        private static void CheckTimeout(DateTime startTime, int maxWaitSeconds, int slot)
+        {
+            double elapsed = (DateTime.Now - startTime).TotalSeconds;
+            if (elapsed >= maxWaitSeconds)
+            {
+                throw new SwitcherLibException(String.Format("Timeout waiting for slot {0} after {1} seconds", slot + 1, maxWaitSeconds));
+            }
+        }
+
         private static void UploadBatch(IList<string> args, bool skipTally)
         {
             string hostname = args[0];
@@ -127,7 +224,6 @@ namespace MediaUpload
 
             int totalImages = args.Count - 1;
             int currentImage = 0;
-            int maxWaitSeconds = 300; // 5 minute timeout per image
 
             // Process each slot:filename pair
             for (int i = 1; i < args.Count; i++)
@@ -147,39 +243,10 @@ namespace MediaUpload
 
                 Log.Info(String.Format("[{0}/{1}] Uploading to slot {2}: {3}", currentImage, totalImages, slot + 1, filename));
 
-                // Wait for slot to be safe (unless skip-tally is set)
+                // Wait for safe upload window (unless skip-tally is set)
                 if (!skipTally)
                 {
-                    DateTime startWait = DateTime.Now;
-                    bool slotSafe = false;
-                    bool loggedWaiting = false;
-                    
-                    while (!slotSafe)
-                    {
-                        slotSafe = switcher.IsSlotSafeToUpload(slot);
-                        
-                        if (!slotSafe)
-                        {
-                            double waitedSeconds = (DateTime.Now - startWait).TotalSeconds;
-                            
-                            if (waitedSeconds >= maxWaitSeconds)
-                            {
-                                throw new SwitcherLibException(String.Format("Timeout waiting for slot {0} to become available", slot + 1));
-                            }
-                            
-                            if (!loggedWaiting)
-                            {
-                                Log.Info(String.Format("Slot {0} is on program, waiting...", slot + 1));
-                                loggedWaiting = true;
-                            }
-                            Thread.Sleep(100);
-                        }
-                    }
-                    
-                    if (loggedWaiting)
-                    {
-                        Log.Info(String.Format("Slot {0} is now safe, uploading...", slot + 1));
-                    }
+                    WaitForSafeUploadWindow(switcher, slot);
                 }
 
                 Upload upload = new Upload(switcher, filename, slot);
@@ -219,40 +286,10 @@ namespace MediaUpload
 
             string filename = String.Join(" ", args);
 
-            // Wait for slot to be safe (unless skip-tally is set)
+            // Wait for safe upload window (unless skip-tally is set)
             if (!skipTally)
             {
-                int maxWaitSeconds = 300;
-                DateTime startWait = DateTime.Now;
-                bool slotSafe = false;
-                bool loggedWaiting = false;
-                
-                while (!slotSafe)
-                {
-                    slotSafe = switcher.IsSlotSafeToUpload(slot);
-                    
-                    if (!slotSafe)
-                    {
-                        double waitedSeconds = (DateTime.Now - startWait).TotalSeconds;
-                        
-                        if (waitedSeconds >= maxWaitSeconds)
-                        {
-                            throw new SwitcherLibException(String.Format("Timeout waiting for slot {0} to become available", slot + 1));
-                        }
-                        
-                        if (!loggedWaiting)
-                        {
-                            Log.Info(String.Format("Slot {0} is on program, waiting...", slot + 1));
-                            loggedWaiting = true;
-                        }
-                        Thread.Sleep(100);
-                    }
-                }
-                
-                if (loggedWaiting)
-                {
-                    Log.Info(String.Format("Slot {0} is now safe, uploading...", slot + 1));
-                }
+                WaitForSafeUploadWindow(switcher, slot);
             }
 
             Upload upload = new Upload(switcher, filename, slot);
