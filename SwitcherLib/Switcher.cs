@@ -1,317 +1,271 @@
-using SwitcherLib;
+using BMDSwitcherAPI;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 
-namespace MediaUpload
+namespace SwitcherLib
 {
-    class MediaUpload
+    public class Switcher
     {
-        private static int Main(string[] args)
+        protected IBMDSwitcher switcher;
+        protected String deviceAddress;
+        protected bool connected;
+
+        public Switcher(string deviceAddress)
         {
+            this.deviceAddress = deviceAddress;
+        }
+
+        public IBMDSwitcher GetSwitcher()
+        {
+            return this.switcher;
+        }
+
+        public void Connect()
+        {
+            if (this.connected)
+            {
+                return;
+            }
+
+            IBMDSwitcherDiscovery switcherDiscovery = new CBMDSwitcherDiscovery();
+            _BMDSwitcherConnectToFailure failReason = 0;
+
             try
             {
-                MediaUpload.ProcessArgs(args);
-                return 0;
+                switcherDiscovery.ConnectTo(this.deviceAddress, out this.switcher, out failReason);
+                this.connected = true;
             }
-            catch (SwitcherLibException ex)
+            catch (COMException ex)
             {
-                Console.Error.WriteLine(ex.Message);
-                return -1;
-            }
-        }
-
-        private static void Help()
-        {
-            ConsoleUtils.Version();
-            Console.Out.WriteLine();
-            Console.Out.WriteLine("Usage: mediaupload.exe [options] <hostname> <slot:filename> [slot:filename ...]");
-            Console.Out.WriteLine("       mediaupload.exe [options] <hostname> <slot> <filename>  (legacy mode)");
-            Console.Out.WriteLine();
-            Console.Out.WriteLine("Uploads images to a BlackMagic ATEM switcher");
-            Console.Out.WriteLine();
-            Console.Out.WriteLine("Arguments:");
-            Console.Out.WriteLine();
-            Console.Out.WriteLine(" hostname        - The hostname or IP of the ATEM switcher");
-            Console.Out.WriteLine(" slot:filename   - Slot number and filename pairs (e.g., 1:image.png 2:image2.png)");
-            Console.Out.WriteLine();
-            Console.Out.WriteLine("Options:");
-            Console.Out.WriteLine();
-            Console.Out.WriteLine(" -h, --help      - This help message");
-            Console.Out.WriteLine(" -d, --debug     - Debug output");
-            Console.Out.WriteLine(" -v, --version   - Version information");
-            Console.Out.WriteLine(" -s, --skip-tally - Skip tally check (upload immediately without checking if slot is on program)");
-            Console.Out.WriteLine();
-            Console.Out.WriteLine("Image Format:");
-            Console.Out.WriteLine();
-            Console.Out.WriteLine("The image must be the same resolution as the switcher. Accepted formats are BMP, JPEG, GIF, PNG and TIFF. Alpha channels are supported.");
-        }
-
-        private static void ProcessArgs(string[] args)
-        {
-            IList<string> args1 = new List<string>();
-            bool skipTally = false;
-            
-            for (int index = 0; index < args.Length; index++)
-            {
-                switch (args[index])
+                switch (failReason)
                 {
-                    case "-h":
-                    case "--help":
-                    case "-?":
-                    case "/?":
-                    case "/h":
-                    case "/help":
-                        MediaUpload.Help();
-                        return;
+                    case _BMDSwitcherConnectToFailure.bmdSwitcherConnectToFailureIncompatibleFirmware:
+                        throw new SwitcherLibException("Incompatible firmware");
 
-                    case "-v":
-                    case "--version":
-                    case "/v":
-                    case "/version":
-                        ConsoleUtils.Version();
-                        return;
-
-                    case "-d":
-                    case "--debug":
-                    case "/d":
-                    case "/debug":
-                        Log.CurrentLevel = Log.Level.Debug;
-                        break;
-
-                    case "-s":
-                    case "--skip-tally":
-                    case "/s":
-                    case "/skip-tally":
-                        skipTally = true;
-                        break;
+                    case _BMDSwitcherConnectToFailure.bmdSwitcherConnectToFailureNoResponse:
+                        throw new SwitcherLibException(String.Format("No response from {0}", this.deviceAddress));
 
                     default:
-                        args1.Add(args[index]);
-                        break;
+                        throw new SwitcherLibException(String.Format("Unknown Error: {0}", ex.Message));
                 }
             }
-            
-            if (args1.Count < 2)
+            catch (Exception ex)
             {
-                MediaUpload.Help();
-                throw new SwitcherLibException("Invalid arguments");
+                throw new SwitcherLibException(String.Format("Unable to connect to switcher: {0}", ex.Message));
             }
+        }
 
-            // Detect batch mode: if second arg contains ":", it's batch mode
-            if (args1[1].Contains(":"))
+        public String GetProductName()
+        {
+            this.Connect();
+            String productName;
+            this.switcher.GetProductName(out productName);
+            return productName;
+        }
+
+        public int GetVideoHeight()
+        {
+            this.Connect();
+            _BMDSwitcherVideoMode videoMode;
+            this.switcher.GetVideoMode(out videoMode);
+            _BMDSwitcherVideoMode switcherVideoMode = videoMode;
+            switch (switcherVideoMode)
             {
-                MediaUpload.UploadBatch(args1, skipTally);
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode4KHDp2398:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode4KHDp24:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode4KHDp25:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode4KHDp2997:
+                    return 2160;
+
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode720p50:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode720p5994:
+                    return 720;
+
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode1080i50:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode1080i5994:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode1080p50:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode1080p2398:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode1080p24:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode1080p25:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode1080p2997:
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode1080p5994:
+                    return 1080;
+
+                case _BMDSwitcherVideoMode.bmdSwitcherVideoMode525i5994NTSC:
+                    return 480;
+                default:
+                    throw new SwitcherLibException(String.Format("Unsupported resolution: {0}", videoMode.ToString()));
             }
-            else
+        }
+
+        public int GetVideoWidth()
+        {
+            int videoHeight = this.GetVideoHeight();
+            switch (videoHeight)
             {
-                MediaUpload.UploadLegacy(args1, skipTally);
+                case 720:
+                    return 1280;
+
+                case 1080:
+                    return 1920;
+
+                case 2160:
+                    return 3840;
+
+                case 480:
+                    return 720;
+                default:
+                    throw new SwitcherLibException(String.Format("Unsupported video height: {0}", videoHeight.ToString()));
             }
         }
 
         /// <summary>
-        /// Waits for a safe upload window using cycle-wait strategy.
-        /// 
-        /// Logic:
-        /// - If slot is currently live: wait for cold -> live -> cold cycle, then upload
-        /// - If slot is currently cold: observe for up to 40 seconds
-        ///   - If it goes live during observation, wait for it to go cold, then upload
-        ///   - If 40 seconds pass without going live, slot isn't in macro rotation, safe to upload
+        /// Check if a slot is safe to upload to.
+        /// Returns true if safe (slot not on a media player with tally ON).
+        /// Returns false if unsafe (slot is on a media player that's currently on program).
         /// </summary>
-        /// <param name="switcher">The switcher instance</param>
-        /// <param name="slot">The slot number (0-indexed)</param>
-        /// <param name="observationSeconds">How long to observe if starting cold (default 40)</param>
-        /// <param name="maxWaitSeconds">Maximum total wait time (default 300)</param>
-        private static void WaitForSafeUploadWindow(Switcher switcher, int slot, int observationSeconds = 40, int maxWaitSeconds = 300)
+        public bool IsSlotSafeToUpload(int slotIndex)
         {
-            DateTime startTime = DateTime.Now;
-            bool initialState = switcher.IsSlotSafeToUpload(slot); // true = cold/safe, false = live
-            
-            Log.Debug(String.Format("Slot {0} initial state: {1}", slot + 1, initialState ? "cold" : "live"));
+            this.Connect();
 
-            if (!initialState)
-            {
-                // Slot is LIVE at start - wait for full cycle: cold -> live -> cold
-                Log.Info(String.Format("Slot {0} is live, waiting for macro cycle to complete...", slot + 1));
-                
-                // Phase 1: Wait for it to go cold
-                Log.Debug(String.Format("Slot {0}: Waiting for cold...", slot + 1));
-                while (!switcher.IsSlotSafeToUpload(slot))
-                {
-                    CheckTimeout(startTime, maxWaitSeconds, slot);
-                    Thread.Sleep(50);
-                }
-                Log.Debug(String.Format("Slot {0}: Now cold, waiting for live...", slot + 1));
-                
-                // Phase 2: Wait for it to go live again
-                while (switcher.IsSlotSafeToUpload(slot))
-                {
-                    CheckTimeout(startTime, maxWaitSeconds, slot);
-                    Thread.Sleep(50);
-                }
-                Log.Debug(String.Format("Slot {0}: Now live, waiting for cold...", slot + 1));
-                
-                // Phase 3: Wait for it to go cold again - this is our safe window
-                while (!switcher.IsSlotSafeToUpload(slot))
-                {
-                    CheckTimeout(startTime, maxWaitSeconds, slot);
-                    Thread.Sleep(50);
-                }
-                Log.Info(String.Format("Slot {0}: Cycle complete, safe to upload", slot + 1));
-            }
-            else
-            {
-                // Slot is COLD at start - observe for up to 40 seconds
-                Log.Info(String.Format("Slot {0} is cold, observing for {1} seconds...", slot + 1, observationSeconds));
-                
-                DateTime observationStart = DateTime.Now;
-                bool sawLive = false;
-                
-                while ((DateTime.Now - observationStart).TotalSeconds < observationSeconds)
-                {
-                    CheckTimeout(startTime, maxWaitSeconds, slot);
-                    
-                    bool currentlySafe = switcher.IsSlotSafeToUpload(slot);
-                    
-                    if (!currentlySafe)
-                    {
-                        // It went live during observation
-                        sawLive = true;
-                        Log.Debug(String.Format("Slot {0}: Went live during observation, waiting for cold...", slot + 1));
-                        
-                        // Wait for it to go cold, then we're safe
-                        while (!switcher.IsSlotSafeToUpload(slot))
-                        {
-                            CheckTimeout(startTime, maxWaitSeconds, slot);
-                            Thread.Sleep(50);
-                        }
-                        Log.Info(String.Format("Slot {0}: Now cold after cycle, safe to upload", slot + 1));
-                        return;
-                    }
-                    
-                    Thread.Sleep(50);
-                }
-                
-                // 40 seconds passed without going live - slot isn't in active rotation
-                Log.Info(String.Format("Slot {0}: No activity detected in {1}s, safe to upload", slot + 1, observationSeconds));
-            }
-        }
-
-        private static void CheckTimeout(DateTime startTime, int maxWaitSeconds, int slot)
-        {
-            double elapsed = (DateTime.Now - startTime).TotalSeconds;
-            if (elapsed >= maxWaitSeconds)
-            {
-                throw new SwitcherLibException(String.Format("Timeout waiting for slot {0} after {1} seconds", slot + 1, maxWaitSeconds));
-            }
-        }
-
-        private static void UploadBatch(IList<string> args, bool skipTally)
-        {
-            string hostname = args[0];
-            Switcher switcher = new Switcher(hostname);
-            Log.Debug(String.Format("Switcher: {0}", switcher.GetProductName()));
-            Log.Debug(String.Format("Resolution: {0}x{1}", switcher.GetVideoWidth().ToString(), switcher.GetVideoHeight().ToString()));
-
-            if (skipTally)
-            {
-                Log.Info("Tally checking disabled - uploading immediately");
-            }
-
-            int totalImages = args.Count - 1;
-            int currentImage = 0;
-
-            // Process each slot:filename pair
-            for (int i = 1; i < args.Count; i++)
-            {
-                currentImage++;
-                string arg = args[i];
-                int colonIndex = arg.IndexOf(':');
-                
-                if (colonIndex == -1)
-                {
-                    throw new SwitcherLibException(String.Format("Invalid format: {0}. Expected slot:filename", arg));
-                }
-
-                string slotStr = arg.Substring(0, colonIndex);
-                string filename = arg.Substring(colonIndex + 1);
-                int slot = MediaUpload.GetSlot(slotStr);
-
-                Log.Info(String.Format("[{0}/{1}] Uploading to slot {2}: {3}", currentImage, totalImages, slot + 1, filename));
-
-                // Wait for safe upload window (unless skip-tally is set)
-                if (!skipTally)
-                {
-                    WaitForSafeUploadWindow(switcher, slot);
-                }
-
-                Upload upload = new Upload(switcher, filename, slot);
-                upload.Start();
-                
-                int lastProgress = -1;
-                while (upload.InProgress())
-                {
-                    int currentProgress = upload.GetProgress();
-                    if (currentProgress != lastProgress)
-                    {
-                        Log.Info(String.Format("Progress: {0}%", currentProgress.ToString()));
-                        lastProgress = currentProgress;
-                    }
-                    Thread.Sleep(100);
-                }
-                Log.Info(String.Format("Progress: {0}%", upload.GetProgress().ToString()));
-            }
-            
-            Log.Info(String.Format("Batch complete: {0} images uploaded", totalImages));
-        }
-
-        private static void UploadLegacy(IList<string> args, bool skipTally)
-        {
-            if (args.Count < 3)
-            {
-                MediaUpload.Help();
-                throw new SwitcherLibException("Invalid arguments");
-            }
-
-            Switcher switcher = new Switcher(args[0]);
-            int slot = MediaUpload.GetSlot(args[1]);
-            Log.Debug(String.Format("Switcher: {0}", switcher.GetProductName()));
-            Log.Debug(String.Format("Resolution: {0}x{1}", switcher.GetVideoWidth().ToString(), switcher.GetVideoHeight().ToString()));
-            args.RemoveAt(0);
-            args.RemoveAt(0);
-
-            string filename = String.Join(" ", args);
-
-            // Wait for safe upload window (unless skip-tally is set)
-            if (!skipTally)
-            {
-                WaitForSafeUploadWindow(switcher, slot);
-            }
-
-            Upload upload = new Upload(switcher, filename, slot);
-            upload.Start();
-            while (upload.InProgress())
-            {
-                Log.Info(String.Format("Progress: {0}%", upload.GetProgress().ToString()));
-                Thread.Sleep(100);
-            }
-            Log.Info(String.Format("Progress: {0}%", upload.GetProgress().ToString()));
-        }
-
-        private static int GetSlot(string arg)
-        {
             try
             {
-                return Convert.ToInt32(arg) - 1;
+                // Get all media players and check if any have this slot loaded
+                IntPtr mediaPlayerIteratorPtr;
+                Guid mediaIteratorIID = typeof(IBMDSwitcherMediaPlayerIterator).GUID;
+                this.switcher.CreateIterator(ref mediaIteratorIID, out mediaPlayerIteratorPtr);
+                IBMDSwitcherMediaPlayerIterator mediaPlayerIterator = (IBMDSwitcherMediaPlayerIterator)Marshal.GetObjectForIUnknown(mediaPlayerIteratorPtr);
+
+                // Get program input to check tally
+                long programInput = GetProgramInput();
+
+                IBMDSwitcherMediaPlayer mediaPlayer;
+                mediaPlayerIterator.Next(out mediaPlayer);
+                int mediaPlayerNumber = 1;
+
+                while (mediaPlayer != null)
+                {
+                    _BMDSwitcherMediaPlayerSourceType type;
+                    uint index;
+                    mediaPlayer.GetSource(out type, out index);
+
+                    // Check if this media player has our slot loaded
+                    if (type == _BMDSwitcherMediaPlayerSourceType.bmdSwitcherMediaPlayerSourceTypeStill && (int)index == slotIndex)
+                    {
+                        // Slot is on this media player - check if media player is on program
+                        long mediaPlayerInputId = GetMediaPlayerInputId(mediaPlayerNumber);
+                        
+                        if (mediaPlayerInputId == programInput)
+                        {
+                            Log.Debug(String.Format("Slot {0} is on Media Player {1} which is ON PROGRAM - NOT SAFE", slotIndex + 1, mediaPlayerNumber));
+                            return false;
+                        }
+                        else
+                        {
+                            Log.Debug(String.Format("Slot {0} is on Media Player {1} but not on program - SAFE", slotIndex + 1, mediaPlayerNumber));
+                        }
+                    }
+
+                    mediaPlayerNumber++;
+                    mediaPlayerIterator.Next(out mediaPlayer);
+                }
+
+                // Slot is not on any media player that's on program
+                return true;
             }
             catch (Exception ex)
             {
-                throw new SwitcherLibException(String.Format("Invalid slot: {0}", arg), ex);
+                Log.Debug(String.Format("Error checking slot safety: {0}", ex.Message));
+                // If we can't check, assume unsafe
+                return false;
             }
         }
+
+        /// <summary>
+        /// Get the current program input ID from Mix Effect Block 1
+        /// </summary>
+        private long GetProgramInput()
+        {
+            IntPtr meIteratorPtr;
+            Guid meIteratorIID = typeof(IBMDSwitcherMixEffectBlockIterator).GUID;
+            this.switcher.CreateIterator(ref meIteratorIID, out meIteratorPtr);
+            IBMDSwitcherMixEffectBlockIterator meIterator = (IBMDSwitcherMixEffectBlockIterator)Marshal.GetObjectForIUnknown(meIteratorPtr);
+
+            IBMDSwitcherMixEffectBlock mixEffectBlock;
+            meIterator.Next(out mixEffectBlock);
+
+            if (mixEffectBlock != null)
+            {
+                long programInput;
+                mixEffectBlock.GetProgramInput(out programInput);
+                return programInput;
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// Get the input ID for a media player (1-based media player number)
+        /// Media Player 1 = 3010, Media Player 2 = 3020, etc.
+        /// </summary>
+        private long GetMediaPlayerInputId(int mediaPlayerNumber)
+        {
+            // Standard ATEM input IDs for media players
+            // MP1 = 3010, MP2 = 3020, MP3 = 3030, MP4 = 3040
+            return 3000 + (mediaPlayerNumber * 10);
+        }
+
+        public IList<MediaStill> GetStills()
+        {
+            IList<MediaStill> list = new List<MediaStill>();
+
+            IBMDSwitcherMediaPool switcherMediaPool = (IBMDSwitcherMediaPool)this.switcher;
+
+            IBMDSwitcherStills stills;
+            switcherMediaPool.GetStills(out stills);
+
+            uint count;
+            stills.GetCount(out count);
+            for (uint index = 0; index < count; index++)
+            {
+                MediaStill mediaStill = new MediaStill(stills, index);
+                list.Add(mediaStill);
+            }
+
+            IntPtr mediaPlayerIteratorPtr;
+            Guid mediaIteratorIID = typeof(IBMDSwitcherMediaPlayerIterator).GUID;
+            this.switcher.CreateIterator(ref mediaIteratorIID, out mediaPlayerIteratorPtr);
+            IBMDSwitcherMediaPlayerIterator mediaPlayerIterator = (IBMDSwitcherMediaPlayerIterator)Marshal.GetObjectForIUnknown(mediaPlayerIteratorPtr);
+
+            IBMDSwitcherMediaPlayer mediaPlayer;
+            mediaPlayerIterator.Next(out mediaPlayer);
+            int num1 = 1;
+            while (mediaPlayer != null)
+            {
+                _BMDSwitcherMediaPlayerSourceType type;
+                uint index;
+                mediaPlayer.GetSource(out type, out index);
+                if (type == _BMDSwitcherMediaPlayerSourceType.bmdSwitcherMediaPlayerSourceTypeStill)
+                {
+                    int num2 = (int)index + 1;
+                    foreach (MediaStill mediaStill in list)
+                    {
+                        if (mediaStill.Slot == num2)
+                        {
+                            mediaStill.MediaPlayer = num1;
+                            break;
+                        }
+                    }
+                }
+                num1++;
+                mediaPlayerIterator.Next(out mediaPlayer);
+            }
+            return list;
+        }
+
     }
 }

@@ -117,10 +117,10 @@ namespace MediaUpload
         /// Waits for a safe upload window using cycle-wait strategy.
         /// 
         /// Logic:
-        /// - If slot is currently hot: wait for cold -> hot -> cold cycle, then upload
+        /// - If slot is currently live: wait for cold -> live -> cold cycle, then upload
         /// - If slot is currently cold: observe for up to 40 seconds
-        ///   - If it goes hot during observation, wait for it to go cold, then upload
-        ///   - If 40 seconds pass without going hot, slot isn't in macro rotation, safe to upload
+        ///   - If it goes live during observation, wait for it to go cold, then upload
+        ///   - If 40 seconds pass without going live, slot isn't in macro rotation, safe to upload
         /// </summary>
         /// <param name="switcher">The switcher instance</param>
         /// <param name="slot">The slot number (0-indexed)</param>
@@ -129,13 +129,13 @@ namespace MediaUpload
         private static void WaitForSafeUploadWindow(Switcher switcher, int slot, int observationSeconds = 40, int maxWaitSeconds = 300)
         {
             DateTime startTime = DateTime.Now;
-            bool initialState = switcher.IsSlotSafeToUpload(slot); // true = cold/safe, false = hot/live
+            bool initialState = switcher.IsSlotSafeToUpload(slot); // true = cold/safe, false = live
             
-            Log.Debug(String.Format("Slot {0} initial state: {1}", slot + 1, initialState ? "cold" : "hot"));
+            Log.Debug(String.Format("Slot {0} initial state: {1}", slot + 1, initialState ? "cold" : "live"));
 
             if (!initialState)
             {
-                // Slot is HOT at start - wait for full cycle: cold -> hot -> cold
+                // Slot is LIVE at start - wait for full cycle: cold -> live -> cold
                 Log.Info(String.Format("Slot {0} is live, waiting for macro cycle to complete...", slot + 1));
                 
                 // Phase 1: Wait for it to go cold
@@ -145,15 +145,15 @@ namespace MediaUpload
                     CheckTimeout(startTime, maxWaitSeconds, slot);
                     Thread.Sleep(50);
                 }
-                Log.Debug(String.Format("Slot {0}: Now cold, waiting for hot...", slot + 1));
+                Log.Debug(String.Format("Slot {0}: Now cold, waiting for live...", slot + 1));
                 
-                // Phase 2: Wait for it to go hot again
+                // Phase 2: Wait for it to go live again
                 while (switcher.IsSlotSafeToUpload(slot))
                 {
                     CheckTimeout(startTime, maxWaitSeconds, slot);
                     Thread.Sleep(50);
                 }
-                Log.Debug(String.Format("Slot {0}: Now hot, waiting for cold...", slot + 1));
+                Log.Debug(String.Format("Slot {0}: Now live, waiting for cold...", slot + 1));
                 
                 // Phase 3: Wait for it to go cold again - this is our safe window
                 while (!switcher.IsSlotSafeToUpload(slot))
@@ -169,7 +169,7 @@ namespace MediaUpload
                 Log.Info(String.Format("Slot {0} is cold, observing for {1} seconds...", slot + 1, observationSeconds));
                 
                 DateTime observationStart = DateTime.Now;
-                bool sawHot = false;
+                bool sawLive = false;
                 
                 while ((DateTime.Now - observationStart).TotalSeconds < observationSeconds)
                 {
@@ -179,9 +179,9 @@ namespace MediaUpload
                     
                     if (!currentlySafe)
                     {
-                        // It went hot during observation
-                        sawHot = true;
-                        Log.Debug(String.Format("Slot {0}: Went hot during observation, waiting for cold...", slot + 1));
+                        // It went live during observation
+                        sawLive = true;
+                        Log.Debug(String.Format("Slot {0}: Went live during observation, waiting for cold...", slot + 1));
                         
                         // Wait for it to go cold, then we're safe
                         while (!switcher.IsSlotSafeToUpload(slot))
@@ -196,7 +196,7 @@ namespace MediaUpload
                     Thread.Sleep(50);
                 }
                 
-                // 40 seconds passed without going hot - slot isn't in active rotation
+                // 40 seconds passed without going live - slot isn't in active rotation
                 Log.Info(String.Format("Slot {0}: No activity detected in {1}s, safe to upload", slot + 1, observationSeconds));
             }
         }
